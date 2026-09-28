@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WarehouseSlot</title>
+<style>
+  body { font-family: Arial, sans-serif; margin: 0; background: #f3f4f6; color: #222; }
+  header { background: #1f3a5f; color: #fff; padding: 14px 24px; }
+  header h1 { margin: 0; font-size: 20px; }
+  main { max-width: 1000px; margin: 20px auto; padding: 0 16px; }
+  section { background: #fff; border-radius: 8px; padding: 16px; margin-bottom: 18px; box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+  h2 { margin: 0 0 12px; font-size: 17px; color: #1f3a5f; }
+  h3 { margin: 14px 0 8px; font-size: 14px; }
+  input, select, button { padding: 7px 10px; margin: 3px 4px 3px 0; font-size: 14px; }
+  button { background: #1f6feb; color: #fff; border: 0; border-radius: 4px; cursor: pointer; }
+  button.green { background: #1a8f4c; }
+  button.grey { background: #6b7280; }
+  table { border-collapse: collapse; width: 100%; margin-top: 8px; font-size: 14px; }
+  th, td { border: 1px solid #ddd; padding: 6px 8px; text-align: left; }
+  th { background: #eef2f7; }
+  .bar { background: #e5e7eb; border-radius: 4px; height: 14px; width: 120px; display: inline-block; vertical-align: middle; }
+  .bar span { display: block; height: 100%; background: #1f6feb; border-radius: 4px; }
+  #msg { position: fixed; top: 12px; right: 12px; padding: 10px 16px; border-radius: 6px; color: #fff; display: none; max-width: 380px; z-index: 10; }
+  .ok { background: #1a8f4c; } .err { background: #c62828; }
+</style>
+</head>
+<body>
+<header><h1>WarehouseSlot – Bin Slotting &amp; Pick-List Generator</h1></header>
+<div id="msg"></div>
+<main>
+
+<section>
+  <h2>1. Register Zones &amp; Bins</h2>
+  <input id="zName" placeholder="Zone name (e.g. Zone A)">
+  <select id="zType"><option>NEAR_DISPATCH</option><option>FAR</option></select>
+  <input id="zRoute" type="number" placeholder="Route order (1,2..)" style="width:150px">
+  <button onclick="addZone()">Add Zone</button>
+  <br>
+  <input id="bCode" placeholder="Bin code (e.g. A-01)">
+  <select id="bZone"></select>
+  <input id="bCap" type="number" placeholder="Capacity" style="width:100px">
+  <button onclick="addBin()">Add Bin</button>
+  <table><thead><tr><th>ID</th><th>Bin</th><th>Zone</th><th>Type</th><th>Route</th><th>Capacity</th><th>Occupied</th></tr></thead><tbody id="binRows"></tbody></table>
+</section>
+
+<section>
+  <h2>2. Assign Incoming Stock</h2>
+  <input id="sItem" placeholder="Item code (e.g. SKU-1)">
+  <select id="sVel"><option>FAST</option><option>SLOW</option></select>
+  <input id="sQty" type="number" placeholder="Quantity" style="width:100px">
+  <button onclick="assignStock()">Assign to Bin</button>
+  <table><thead><tr><th>Item</th><th>Velocity</th><th>Bin</th><th>Zone</th><th>Quantity</th></tr></thead><tbody id="stockRows"></tbody></table>
+</section>
+
+<section>
+  <h2>3. Orders &amp; Pick List</h2>
+  <input id="oItem" placeholder="Item code">
+  <input id="oQty" type="number" placeholder="Qty" style="width:80px">
+  <button class="grey" onclick="addLine()">+ Add Line</button>
+  <button onclick="createOrder()">Create Order</button>
+  <div id="lines" style="margin:6px 0;font-size:14px"></div>
+  <table><thead><tr><th>Order</th><th>Lines</th><th>Status</th><th>Action</th></tr></thead><tbody id="orderRows"></tbody></table>
+
+  <h3>Pick List</h3>
+  <input id="plId" type="number" placeholder="Pick list ID" style="width:120px">
+  <button class="grey" onclick="loadPickList(document.getElementById('plId').value)">View</button>
+  <div id="plBox"></div>
+</section>
+
+<section>
+  <h2>4 &amp; 5. Reports</h2>
+  <button class="grey" onclick="loadReports()">Refresh</button>
+  <h3>Bin Utilization</h3>
+  <table><thead><tr><th>Bin</th><th>Zone</th><th>Capacity</th><th>Occupied</th><th>Utilization</th></tr></thead><tbody id="utilRows"></tbody></table>
+  <h3>Item Velocity (total picked)</h3>
+  <table><thead><tr><th>Item</th><th>Total Picked</th></tr></thead><tbody id="velRows"></tbody></table>
+</section>
+
+</main>
+<script>
+let orderLines = [];
+
+function show(text, ok) {
+  const m = document.getElementById('msg');
+  m.textContent = text; m.className = ok ? 'ok' : 'err'; m.style.display = 'block';
+  setTimeout(() => m.style.display = 'none', 3500);
+}
+async function api(url, method = 'GET', body) {
+  const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+  const data = await r.json().catch(() => null);
+  if (!r.ok) throw new Error(data && data.error ? data.error : 'Request failed');
+  return data;
+}
+async function run(fn, okText) {
+  try { await fn(); if (okText) show(okText, true); } catch (e) { show(e.message, false); }
+}
+const val = id => document.getElementById(id).value;
+const num = id => val(id) === '' ? null : Number(val(id));
+
+// ---- 1. Zones & bins
+function addZone() { run(async () => {
+  await api('/api/zones', 'POST', 
+  { name: val('zName'),
+   type: val('zType'), 
+   routeOrder: num('zRoute') });
+  await loadBins();
+}, 'Zone added'); }
+
+function addBin() { run(async () => {
+  await api('/api/bins', 'POST', { code: val('bCode'), zoneId: num('bZone'), capacity: num('bCap') });
+  await loadBins();
+}, 'Bin added'); }
+
+async function loadBins() {
+  const zones = await api('/api/zones');
+  document.getElementById('bZone').innerHTML = zones.map(z => `<option value="${z.id}">${z.name} (${z.type})</option>`).join('');
+  const bins = await api('/api/bins');
+  document.getElementById('binRows').innerHTML = bins.map(b =>
+    `<tr><td>${b.id}</td><td>${b.code}</td><td>${b.zone.name}</td><td>${b.zone.type}</td><td>${b.zone.routeOrder}</td><td>${b.capacity}</td><td>${b.occupied}</td></tr>`).join('');
+}
+
+// ---- 2. Stock
+function assignStock() { run(async () => {
+  const r = await api('/api/stock/assign', 'POST', { itemCode: val('sItem'), velocity: val('sVel'), quantity: num('sQty') });
+  await loadStock(); await loadBins();
+  show('Assigned to bin ' + r.bin.code + ' (' + r.bin.zone.name + ')', true);
+}); }
+
+async function loadStock() {
+  const list = await api('/api/stock');
+  document.getElementById('stockRows').innerHTML = list.map(s =>
+    `<tr><td>${s.itemCode}</td><td>${s.velocity}</td><td>${s.bin.code}</td><td>${s.bin.zone.name}</td><td>${s.quantity}</td></tr>`).join('');
+}
+
+// ---- 3. Orders & pick lists
+function addLine() {
+  if (!val('oItem') || !num('oQty')) return show('Enter item code and quantity', false);
+  orderLines.push({ itemCode: val('oItem'), quantity: num('oQty') });
+  renderLines();
+}
+function renderLines() {
+  document.getElementById('lines').textContent = orderLines.map(l => l.itemCode + ' x ' + l.quantity).join('  |  ');
+}
+function createOrder() { run(async () => {
+  await api('/api/orders', 'POST', { lines: orderLines });
+  orderLines = []; renderLines(); await loadOrders();
+}, 'Order created'); }
+
+async function loadOrders() {
+  const orders = await api('/api/orders');
+  document.getElementById('orderRows').innerHTML = orders.map(o =>
+    `<tr><td>${o.id}</td><td>${o.lines.map(l => l.itemCode + ' x ' + l.quantity).join(', ')}</td><td>${o.status}</td>
+     <td>${o.status === 'NEW' ? `<button onclick="generate(${o.id})">Generate Pick List</button>` : ''}</td></tr>`).join('');
+}
+function generate(orderId) { run(async () => {
+  const pl = await api('/api/orders/' + orderId + '/picklist', 'POST');
+  await loadOrders(); showPickList(pl);
+}, 'Pick list generated'); }
+
+function loadPickList(id) { run(async () => { showPickList(await api('/api/picklists/' + id)); }); }
+
+function showPickList(pl) {
+  document.getElementById('plId').value = pl.id;
+  document.getElementById('plBox').innerHTML =
+    `<p>Pick list #${pl.id} for order #${pl.order.id} – <b>${pl.status}</b></p>
+     <table><thead><tr><th>#</th><th>Bin</th><th>Zone</th><th>Item</th><th>Qty</th><th>Picked</th></tr></thead><tbody>` +
+    pl.items.map((p, i) => `<tr><td>${i + 1}</td><td>${p.bin.code}</td><td>${p.bin.zone.name}</td><td>${p.itemCode}</td><td>${p.quantity}</td><td>${p.picked ? 'Yes' : 'No'}</td></tr>`).join('') +
+    `</tbody></table>` +
+    (pl.status === 'OPEN' ? `<button class="green" onclick="confirmPick(${pl.id})">Confirm Picked</button>` : '');
+}
+function confirmPick(id) { run(async () => {
+  showPickList(await api('/api/picklists/' + id + '/pick', 'PUT'));
+  await loadOrders(); await loadStock(); await loadBins(); await loadReports();
+}, 'Picked! Bin occupancy updated'); }
+
+// ---- Reports
+async function loadReports() {
+  const util = await api('/api/reports/bin-utilization');
+  document.getElementById('utilRows').innerHTML = util.map(u =>
+    `<tr><td>${u.binCode}</td><td>${u.zone}</td><td>${u.capacity}</td><td>${u.occupied}</td>
+     <td><span class="bar"><span style="width:${u.utilizationPercent}%"></span></span> ${u.utilizationPercent}%</td></tr>`).join('');
+  const vel = await api('/api/reports/item-velocity');
+  document.getElementById('velRows').innerHTML = vel.length
+    ? vel.map(v => `<tr><td>${v.itemCode}</td><td>${v.totalPicked}</td></tr>`).join('')
+    : '<tr><td colspan="2">No picks yet</td></tr>';
+}
+
+// ---- initial load
+run(async () => { await loadBins(); await loadStock(); await loadOrders(); await loadReports(); });
+</script>
+</body>
+</html>
