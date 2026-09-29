@@ -20,7 +20,8 @@ public class BinController {
 
     @PostMapping("/zones")
     @ResponseStatus(HttpStatus.CREATED)
-    public Zone createZone(@Valid @RequestBody ZoneRequest req) { return service.createZone(req); }
+    public Zone createZone(@Valid @RequestBody ZoneRequest req)
+     { return service.createZone(req); }
 
     @GetMapping("/zones")
     public List<Zone> zones() { return service.getZones(); }

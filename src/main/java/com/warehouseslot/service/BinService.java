@@ -33,7 +33,8 @@ public class BinService {
         return zoneRepo.save(z);
     }
 
-    public List<Zone> getZones() { return zoneRepo.findAll(); }
+    public List<Zone> getZones() 
+    { return zoneRepo.findAll(); }
 
     public Bin createBin(BinRequest req) {
         if (binRepo.existsByCode(req.code()))
